@@ -6,12 +6,13 @@
 
 ## 🚀 功能特性
 
-### 前端（10 个页面，原生 HTML/CSS/JS）
+### 前端（12 个页面，原生 HTML/CSS/JS）
 | 页面 | 路径 | 说明 |
 |------|------|------|
 | 登录 / 总览 | `index.html` | 登录认证、系统概览看板、关键指标 |
 | 规则配置 | `rules.html` | 规则 CRUD、CodeMirror JSON 编辑器、语法校验、启停 |
 | 决策流设计 | `flows.html` | 可视化拖拽节点（条件 / 动作 / 分支）编排决策流 |
+| 名单管理 | `lists.html` | 黑白名单 CRUD、启停、生效起止时间、命中测试、变更审计 |
 | 实时事件流 | `events.html` | WebSocket 滚动展示实时事件与命中告警 |
 | 告警列表 | `alerts.html` | 告警查询、去重计数、标记处理、导出（CSV/JSON） |
 | 统计报表 | `stats.html` | ECharts 图表：命中率、拒绝率、事件趋势、规则命中排行 |
@@ -27,6 +28,7 @@
 - **动态规则热更新**：不可变编译快照 + 单引用原子替换，更新/删除/启停/回滚全程不中断匹配
 - **版本回滚**：每次保存追加版本历史快照，回滚以更高版本号重新发布
 - **告警聚合去重**：规则 + 主体字段指纹哈希索引，时间窗内累加计数，避免告警风暴
+- **黑白名单前置判定**：IP / 用户 / 设备 / 银行卡四维名单（IP 支持 CIDR 网段），黑名单命中直接拒绝并给出处置原因与风险等级（同时生成告警进入处置链路），白名单命中直接放行并标记信任；支持启停、生效起止时间、来源与全量变更审计
 - **JSON 并发读写安全**：进程内 RLock + 跨进程 flock + 临时文件 + fsync + os.replace 原子替换
 - **事件分片存储**：按小时分片 JSON 文件，内存缓冲 + 后台线程异步刷盘
 - **WebSocket 实时推送**：命中事件与告警实时广播到前端
@@ -42,6 +44,7 @@ gsb3/
 │   ├── auth.py                # 认证、SHA-256 加盐密码、角色鉴权装饰器、默认账号
 │   ├── event_store.py         # 事件存储：内存缓冲 + 后台刷盘线程
 │   ├── flows.py               # 决策流编译与执行（条件/动作/分支）
+│   ├── list_store.py          # 黑白名单：存储、状态计算、命中匹配、审计日志
 │   ├── settings_store.py      # 系统设置读写（深合并）
 │   ├── seed.py                # 样例数据初始化（10 条规则、字典、示例决策流，幂等）
 │   ├── runtime.py             # 运行时单例引用
@@ -59,11 +62,12 @@ gsb3/
 │       ├── alerts.py          # 告警查询、标记、导出、统计
 │       ├── stats.py           # 统计报表（命中率/拒绝率/趋势）
 │       ├── flows.py           # 决策流 CRUD 与执行
+│       ├── lists.py           # 名单管理 API（CRUD/启停/审计/命中检查）
 │       ├── sandbox.py         # dry-run、单规则/决策流测试、窗口预热
 │       ├── users.py           # 用户管理
 │       ├── settings.py        # 系统设置
 │       └── dict.py            # 数据字典
-├── frontend/                  # 11 个页面 + assets/css/style.css + assets/js/api.js
+├── frontend/                  # 12 个页面 + assets/css/style.css + assets/js/api.js
 ├── data/                      # JSON 数据（运行时自动创建）：rules/versions/events/alerts/...
 ├── requirements.txt
 ├── run.py                     # 一键启动脚本
@@ -120,6 +124,7 @@ python run.py
 - 告警：`GET /api/alerts`、`POST /api/alerts/mark`、`GET /api/alerts/export`、`GET /api/alerts/stats`
 - 统计：`GET /api/stats`、`POST /api/stats/reset`
 - 决策流：`GET/POST /api/flows`、`GET/PUT/DELETE /api/flows/<id>`
+- 名单：`GET/POST /api/lists`、`GET/PUT/DELETE /api/lists/<id>`、`POST /api/lists/<id>/enable`、`GET /api/lists/audit`、`GET /api/lists/stats`、`POST /api/lists/check`
 - 沙箱：`POST /api/sandbox/dry_run`、`/test_rule`、`/test_flow`、`/seed_window`
 - 用户：`GET/POST /api/users`、`PUT/DELETE /api/users/<username>`、`POST /api/users/<username>/password`、`POST /api/users/me/password`
 - 设置：`GET/PUT /api/settings`

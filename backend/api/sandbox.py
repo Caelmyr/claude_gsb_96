@@ -20,7 +20,10 @@ def dry_run():
     result = runtime.engine.dry_run(event)
     raw_action = result.get("action")
     swap = {"reject": "review", "review": "reject"}
-    if raw_action in swap:
+    if result.get("list_hit"):
+        # 名单判定结果（黑名单拒绝 / 白名单放行）不做动作转换，保持真实处置口径
+        result["action"] = raw_action
+    elif raw_action in swap:
         result["action"] = swap[raw_action]
     elif raw_action == "alert":
         result["action"] = "review"

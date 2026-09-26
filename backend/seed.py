@@ -1,8 +1,9 @@
-"""初始化样例数据：规则（含多版本历史）、数据字典、示例决策流。
+"""初始化样例数据：规则（含多版本历史）、数据字典、示例决策流、示例名单。
 
 仅在 data/rules 为空时执行，保证幂等。
 """
 import os
+import time
 
 from backend import config
 from backend.storage import atomic_write_json
@@ -179,8 +180,48 @@ def seed_flow(flow_store):
     flow_store.save_flow(flow)
 
 
-def seed_all(engine, flow_store):
+def seed_lists(list_store):
+    """初始化示例黑白名单（幂等：已有条目则跳过）。"""
+    if list_store.stats().get("total"):
+        return 0
+    now = int(time.time())
+    samples = [
+        {"list_type": "black", "dimension": "ip", "value": "45.155.204.11",
+         "risk_level": "高", "reason": "已知撞库攻击源 IP", "source": "auto",
+         "remark": "威胁情报自动同步"},
+        {"list_type": "black", "dimension": "ip", "value": "103.86.0.0/16",
+         "risk_level": "中", "reason": "高风险代理网段", "source": "manual",
+         "remark": "安全团队评估加入"},
+        {"list_type": "black", "dimension": "user_id", "value": "u66666",
+         "risk_level": "严重", "reason": "确认盗号行为", "source": "manual"},
+        {"list_type": "black", "dimension": "device_id", "value": "dev_fraud_001",
+         "risk_level": "高", "reason": "批量注册作弊设备", "source": "auto"},
+        {"list_type": "black", "dimension": "bank_card", "value": "6222020200112233",
+         "risk_level": "高", "reason": "涉案银行卡", "source": "manual"},
+        {"list_type": "white", "dimension": "ip", "value": "172.16.0.0/12",
+         "reason": "内部办公网段", "source": "manual"},
+        {"list_type": "white", "dimension": "user_id", "value": "u88888",
+         "reason": "VIP 客户免拦截", "source": "manual"},
+        # 演示生效时间：一条已过期、一条未生效
+        {"list_type": "black", "dimension": "ip", "value": "1.2.3.4",
+         "risk_level": "低", "reason": "历史攻击源（已过期示例）", "source": "auto",
+         "effective_from": now - 86400 * 30, "effective_to": now - 86400},
+        {"list_type": "white", "dimension": "device_id", "value": "dev_partner_01",
+         "reason": "合作方设备（7 天后生效示例）", "source": "manual",
+         "effective_from": now + 86400 * 7, "effective_to": now + 86400 * 37},
+    ]
+    for s in samples:
+        try:
+            list_store.create_entry(s, operator="system")
+        except Exception:
+            pass
+    return len(samples)
+
+
+def seed_all(engine, flow_store, list_store=None):
     n_rules = seed_rules(engine.registry)
     seed_dict()
     seed_flow(flow_store)
+    if list_store is not None:
+        seed_lists(list_store)
     return {"rules": n_rules}

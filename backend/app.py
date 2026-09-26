@@ -27,16 +27,21 @@ def create_app():
     # 运行时单例
     engine = RiskEngine(settings=get_settings())
     flows = FlowStore()
-    runtime.init(engine, flows)
+    from backend.list_store import ListStore
+    list_store = ListStore()
+    runtime.init(engine, flows, list_store)
+    engine.set_list_store(list_store)
 
     # 初始化样例数据（幂等）
     from backend import seed
-    seed.seed_all(engine, flows)
+    seed.seed_all(engine, flows, list_store)
 
     # ---- 注册 API 蓝图 ----
     from backend.api import (rules, events, alerts, stats, users,
-                             settings, sandbox, dict as dict_api, flows as flows_api)
-    for module in (rules, events, alerts, stats, users, settings, sandbox, dict_api, flows_api):
+                             settings, sandbox, dict as dict_api, flows as flows_api,
+                             lists as lists_api)
+    for module in (rules, events, alerts, stats, users, settings, sandbox, dict_api,
+                   flows_api, lists_api):
         app.register_blueprint(module.bp)
 
     # ---- 认证 ----

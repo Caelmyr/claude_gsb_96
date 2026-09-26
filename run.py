@@ -21,6 +21,7 @@ PAGES = [
     ("index.html", "登录与总览"),
     ("rules.html", "规则配置"),
     ("flows.html", "决策流设计"),
+    ("lists.html", "名单管理"),
     ("events.html", "实时事件流"),
     ("alerts.html", "告警列表"),
     ("stats.html", "统计报表"),

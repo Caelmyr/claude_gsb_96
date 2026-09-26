@@ -23,10 +23,13 @@ FLOWS_DIR = os.path.join(DATA_DIR, "flows")        # 决策流
 DICT_DIR = os.path.join(DATA_DIR, "dict")          # 数据字典
 SETTINGS_DIR = os.path.join(DATA_DIR, "settings")  # 系统设置
 WINDOWS_DIR = os.path.join(DATA_DIR, "windows")    # 滑动窗口状态（可选持久化快照）
+LISTS_DIR = os.path.join(DATA_DIR, "lists")        # 黑白名单
 
 USERS_FILE = os.path.join(USERS_DIR, "users.json")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "system.json")
 DICT_FILE = os.path.join(DICT_DIR, "dict.json")
+LIST_ENTRIES_FILE = os.path.join(LISTS_DIR, "entries.json")  # 名单条目
+LIST_AUDIT_FILE = os.path.join(LISTS_DIR, "audit.json")      # 名单变更审计日志
 
 # 服务配置
 API_HOST = os.environ.get("RISK_HOST", "0.0.0.0")
@@ -64,11 +67,16 @@ CONDITION_OPS = ["==", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "
 # 聚合类型
 AGG_TYPES = ["count", "sum", "avg", "distinct_count", "max", "min"]
 
+# 名单管理：维度 / 类型 / 来源
+LIST_TYPES = ["black", "white"]
+LIST_DIMENSIONS = ["ip", "user_id", "device_id", "bank_card"]
+LIST_SOURCES = ["manual", "auto"]
+
 
 def ensure_dirs():
     """确保所有数据目录存在。"""
     for d in (RULES_DIR, VERSIONS_DIR, EVENTS_DIR, ALERTS_DIR, USERS_DIR,
-              FLOWS_DIR, DICT_DIR, SETTINGS_DIR, WINDOWS_DIR):
+              FLOWS_DIR, DICT_DIR, SETTINGS_DIR, WINDOWS_DIR, LISTS_DIR):
         os.makedirs(d, exist_ok=True)
     if not os.path.exists(SETTINGS_FILE):
         from backend.storage import atomic_write_json
