@@ -1,8 +1,9 @@
-"""初始化样例数据：规则（含多版本历史）、数据字典、示例决策流。
+"""初始化样例数据：规则（含多版本历史）、数据字典、示例决策流、黑白名单。
 
 仅在 data/rules 为空时执行，保证幂等。
 """
 import os
+import time
 
 from backend import config
 from backend.storage import atomic_write_json
@@ -179,8 +180,46 @@ def seed_flow(flow_store):
     flow_store.save_flow(flow)
 
 
-def seed_all(engine, flow_store):
+def seed_lists(list_store):
+    """初始化示例黑白名单（幂等：已有条目则跳过）。"""
+    if list_store is None:
+        return
+    with list_store._lock:
+        if list_store._entries:
+            return
+    now = int(time.time())
+    samples = [
+        # 黑名单：IP 网段 / 单 IP / 用户 / 设备 / 银行卡
+        {"list_type": "black", "dimension": "ip", "value": "203.0.113.0/24",
+         "risk_level": "高", "reason": "已知代理出口网段", "remark": "威胁情报同步",
+         "source": "auto"},
+        {"list_type": "black", "dimension": "ip", "value": "45.155.204.10",
+         "risk_level": "严重", "reason": "撞库攻击源 IP", "remark": "安全运营确认",
+         "source": "manual"},
+        {"list_type": "black", "dimension": "user", "value": "u66666",
+         "risk_level": "高", "reason": "历史欺诈账号", "source": "manual"},
+        {"list_type": "black", "dimension": "device", "value": "ios",
+         "risk_level": "中", "reason": "模拟器/改机设备指纹", "source": "auto",
+         "enabled": False},
+        {"list_type": "black", "dimension": "bank_card", "value": "6222020200112233",
+         "risk_level": "高", "reason": "涉案银行卡", "source": "manual"},
+        # 白名单：内部办公 IP / 测试账号 / 内部设备
+        {"list_type": "white", "dimension": "ip", "value": "10.0.0.0/8",
+         "risk_level": "低", "reason": "内部办公网段", "remark": "运维维护",
+         "source": "manual"},
+        {"list_type": "white", "dimension": "user", "value": "u999",
+         "risk_level": "低", "reason": "内部测试账号", "source": "manual"},
+        {"list_type": "white", "dimension": "device", "value": "web",
+         "risk_level": "低", "reason": "内部演示设备", "source": "manual",
+         "effective_start": now - 86400, "effective_end": now + 30 * 86400},
+    ]
+    for s in samples:
+        list_store.create(s, operator="system")
+
+
+def seed_all(engine, flow_store, list_store=None):
     n_rules = seed_rules(engine.registry)
     seed_dict()
     seed_flow(flow_store)
+    seed_lists(list_store)
     return {"rules": n_rules}

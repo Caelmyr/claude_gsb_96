@@ -23,10 +23,13 @@ FLOWS_DIR = os.path.join(DATA_DIR, "flows")        # 决策流
 DICT_DIR = os.path.join(DATA_DIR, "dict")          # 数据字典
 SETTINGS_DIR = os.path.join(DATA_DIR, "settings")  # 系统设置
 WINDOWS_DIR = os.path.join(DATA_DIR, "windows")    # 滑动窗口状态（可选持久化快照）
+LISTS_DIR = os.path.join(DATA_DIR, "lists")        # 黑白名单
 
 USERS_FILE = os.path.join(USERS_DIR, "users.json")
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "system.json")
 DICT_FILE = os.path.join(DICT_DIR, "dict.json")
+LISTS_FILE = os.path.join(LISTS_DIR, "lists.json")
+LIST_AUDITS_FILE = os.path.join(LISTS_DIR, "audits.json")
 
 # 服务配置
 API_HOST = os.environ.get("RISK_HOST", "0.0.0.0")
@@ -58,6 +61,20 @@ DEFAULT_SETTINGS = {
 # 动作类型
 ACTION_TYPES = ["reject", "review", "pass", "alert"]
 
+# 名单类型 / 维度 / 来源
+LIST_TYPES = ["black", "white"]                 # 黑名单 / 白名单
+LIST_DIMENSIONS = ["ip", "user", "device", "bank_card"]
+LIST_DIMENSION_FIELDS = {                        # 维度 -> 事件取值字段（按优先级回退）
+    "ip": ["ip"],
+    "user": ["user_id", "uid", "username"],
+    "device": ["device_id", "did"],
+    "bank_card": ["bank_card", "card_no", "card_id"],
+}
+LIST_SOURCES = ["manual", "auto"]                # 人工添加 / 系统自动生成
+LIST_RISK_LEVELS = ["低", "中", "高", "严重"]
+LIST_RISK_SCORE = {"低": 30, "中": 60, "高": 85, "严重": 98}
+LIST_AUDIT_MAX = 2000                            # 审计日志最多保留条数
+
 # 条件操作符
 CONDITION_OPS = ["==", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "regex", "exists"]
 
@@ -68,7 +85,7 @@ AGG_TYPES = ["count", "sum", "avg", "distinct_count", "max", "min"]
 def ensure_dirs():
     """确保所有数据目录存在。"""
     for d in (RULES_DIR, VERSIONS_DIR, EVENTS_DIR, ALERTS_DIR, USERS_DIR,
-              FLOWS_DIR, DICT_DIR, SETTINGS_DIR, WINDOWS_DIR):
+              FLOWS_DIR, DICT_DIR, SETTINGS_DIR, WINDOWS_DIR, LISTS_DIR):
         os.makedirs(d, exist_ok=True)
     if not os.path.exists(SETTINGS_FILE):
         from backend.storage import atomic_write_json

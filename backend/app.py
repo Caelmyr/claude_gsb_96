@@ -9,6 +9,7 @@ from flask_sock import Sock
 from backend import config, auth, runtime
 from backend.engine.engine import RiskEngine
 from backend.flows import FlowStore
+from backend.list_store import ListStore
 from backend.settings_store import get_settings
 
 # 全局 socket 实例（供 app.py 与测试使用）
@@ -27,16 +28,20 @@ def create_app():
     # 运行时单例
     engine = RiskEngine(settings=get_settings())
     flows = FlowStore()
-    runtime.init(engine, flows)
+    lists = ListStore()
+    engine.list_store = lists
+    runtime.init(engine, flows, lists)
 
     # 初始化样例数据（幂等）
     from backend import seed
-    seed.seed_all(engine, flows)
+    seed.seed_all(engine, flows, lists)
 
     # ---- 注册 API 蓝图 ----
     from backend.api import (rules, events, alerts, stats, users,
-                             settings, sandbox, dict as dict_api, flows as flows_api)
-    for module in (rules, events, alerts, stats, users, settings, sandbox, dict_api, flows_api):
+                             settings, sandbox, dict as dict_api, flows as flows_api,
+                             lists as lists_api)
+    for module in (rules, events, alerts, stats, users, settings, sandbox,
+                   dict_api, flows_api, lists_api):
         app.register_blueprint(module.bp)
 
     # ---- 认证 ----
@@ -113,10 +118,15 @@ app = create_app()
 
 
 def _shutdown():
-    """进程退出前 flush 事件缓冲。"""
+    """进程退出前 flush 事件缓冲与名单命中计数。"""
     if runtime.engine is not None:
         try:
             runtime.engine.events.stop()
+        except Exception:
+            pass
+    if runtime.list_store is not None:
+        try:
+            runtime.list_store.flush()
         except Exception:
             pass
 

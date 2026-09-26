@@ -1,6 +1,8 @@
 """风控引擎统一编排。
 
 处理一条事件的完整链路：
+0. 名单匹配：命中黑名单直接拒绝（明确处置原因与风险等级，并产生告警），
+   命中白名单直接信任放行（短路规则引擎，不污染滑动窗口）；
 1. 规范化事件（补 ts / id / type）；
 2. 读取一次当前规则快照（不可变），把事件喂入滑动窗口（对每个聚合键 field 取值）；
 3. alpha 匹配：调用 Rete/决策树得到候选规则；
@@ -10,8 +12,8 @@
 7. 事件持久化（按小时分片）与实时广播（WebSocket 订阅者）。
 
 统计口径：
-- 命中（hit）：至少一条规则 alpha+beta 全部命中；
-- 拒绝（reject）：最终动作为 reject 的事件。
+- 命中（hit）：至少一条规则 alpha+beta 全部命中，或命中黑名单；
+- 拒绝（reject）：最终动作为 reject 的事件（含黑名单直接拒绝）。
 命中率 = 命中事件数 / 总事件数；拒绝率 = 拒绝事件数 / 总事件数。
 """
 import time
@@ -22,6 +24,7 @@ from backend.engine.window import SlidingWindowAggregator
 from backend.engine.alert import AlertAggregator
 from backend.engine.rule_parser import _get_field
 from backend.event_store import EventStore
+from backend.list_store import ListStore
 from backend import config
 
 
@@ -53,12 +56,16 @@ class RiskEngine:
         )
         self.events = EventStore()
 
+        # 名单存储（由 app.py 注入；为 None 时跳过名单匹配）
+        self.list_store = None
+
         self._listeners = set()
         self._listener_lock = threading.Lock()
         self._lock = threading.RLock()
 
         # 统计计数器与分钟级时间序列（供 ECharts 命中率/拒绝率）
         self._counters = {"total": 0, "matched": 0, "rejected": 0, "alerted": 0,
+                          "blacklist_hits": 0, "whitelist_hits": 0,
                           "risk_score_sum": 0.0, "elapsed_us_sum": 0.0}
         self._minute_series = {}   # minute_ts -> {total, matched, rejected, alerted}
 
@@ -115,6 +122,96 @@ class RiskEngine:
         return best_type, max_score
 
     # ------------------------------------------------------------------
+    # 名单处置（黑名单直接拒绝 / 白名单信任放行）
+    # ------------------------------------------------------------------
+    def _bump_minute_locked(self, ts, matched, rejected, alerted):
+        """分钟级时间序列累加（需在 self._lock 内调用）。"""
+        shifted = ts - 8 * 3600
+        bucket = int(shifted // 60)
+        minute = bucket * 60
+        if minute % 3600 != 0:
+            minute = (minute // 3600) * 3600
+        m = self._minute_series.setdefault(minute, {"total": 0, "matched": 0,
+                                                    "rejected": 0, "alerted": 0})
+        m["total"] += 1
+        m["matched"] += 1 if matched else 0
+        m["rejected"] += 1 if rejected else 0
+        m["alerted"] += alerted
+
+    def _finalize_blacklist(self, event, hits, ts, start):
+        """黑名单命中：直接拒绝，给出处置原因与风险等级，并产生告警（复用去重）。"""
+        top = hits[0]
+        alert_results = []
+        for hit in hits:
+            pseudo = ListStore.as_pseudo_rule(hit)
+            alert, created = self.alerts.process(pseudo, event, ts=ts,
+                                                 source="blacklist")
+            alert_results.append({
+                "alert_id": alert["id"],
+                "rule_id": pseudo.id,
+                "created": created,
+                "count": alert.get("count", 1),
+                "level": alert.get("level"),
+                "subject": alert.get("subject", {}),
+            })
+        elapsed_us = int((time.perf_counter() - start) * 1e6)
+        decision = {
+            "event_id": event.get("id"),
+            "ts": ts,
+            "matched": True,
+            "action": "reject",
+            "risk_score": top["risk_score"],
+            "risk_level": top["risk_level"],
+            "reason": top["reason"] or f"{top['dimension_label']}命中黑名单",
+            "list_hit": {"type": "black", "hits": hits},
+            "fired_rules": [],
+            "alerts": alert_results,
+            "elapsed_us": elapsed_us,
+            "engine_version": self.registry.current.version,
+        }
+        self.events.add(event, ts=ts)
+        with self._lock:
+            c = self._counters
+            c["total"] += 1
+            c["matched"] += 1
+            c["rejected"] += 1
+            c["alerted"] += len(alert_results)
+            c["blacklist_hits"] += 1
+            c["risk_score_sum"] += top["risk_score"]
+            c["elapsed_us_sum"] += elapsed_us
+            self._bump_minute_locked(ts, True, True, len(alert_results))
+        self._broadcast({"kind": "event", "event": event, "decision": decision})
+        return decision
+
+    def _finalize_whitelist(self, event, hits, ts, start):
+        """白名单命中：信任放行，短路规则引擎（不进滑动窗口、不产生告警）。"""
+        top = hits[0]
+        elapsed_us = int((time.perf_counter() - start) * 1e6)
+        decision = {
+            "event_id": event.get("id"),
+            "ts": ts,
+            "matched": False,
+            "action": "pass",
+            "risk_score": 0,
+            "trusted": True,
+            "reason": top["reason"] or f"{top['dimension_label']}命中白名单，信任放行",
+            "list_hit": {"type": "white", "hits": hits},
+            "fired_rules": [],
+            "alerts": [],
+            "elapsed_us": elapsed_us,
+            "engine_version": self.registry.current.version,
+        }
+        self.events.add(event, ts=ts)
+        with self._lock:
+            c = self._counters
+            c["total"] += 1
+            c["whitelist_hits"] += 1
+            c["elapsed_us_sum"] += elapsed_us
+            self._bump_minute_locked(ts, False, False, 0)
+        self._broadcast({"kind": "event", "event": event, "decision": decision})
+        return decision
+
+    # ------------------------------------------------------------------
     # 主入口
     # ------------------------------------------------------------------
     def process_event(self, event):
@@ -123,6 +220,14 @@ class RiskEngine:
         ts = event.get("ts") or time.time()
         event.setdefault("ts", ts)
         event.setdefault("id", event.get("id") or f"ev_{int(ts * 1000)}")
+
+        # 0) 名单匹配：黑名单直接拒绝 / 白名单信任放行（短路规则引擎）
+        if self.list_store is not None:
+            list_hits = self.list_store.match(event, ts=ts)
+            if list_hits["black"]:
+                return self._finalize_blacklist(event, list_hits["black"], ts, start)
+            if list_hits["white"]:
+                return self._finalize_whitelist(event, list_hits["white"], ts, start)
 
         snapshot = self.registry.current
 
@@ -199,17 +304,8 @@ class RiskEngine:
             c["alerted"] += len(alert_results)
             c["risk_score_sum"] += max_score
             c["elapsed_us_sum"] += elapsed_us
-            shifted = ts - 8 * 3600
-            bucket = int(shifted // 60)
-            minute = bucket * 60
-            if minute % 3600 != 0:
-                minute = (minute // 3600) * 3600
-            m = self._minute_series.setdefault(minute, {"total": 0, "matched": 0,
-                                                        "rejected": 0, "alerted": 0})
-            m["total"] += 1
-            m["matched"] += 1 if matched else 0
-            m["rejected"] += 1 if action == "reject" else 0
-            m["alerted"] += len(alert_results)
+            self._bump_minute_locked(ts, matched, action == "reject",
+                                     len(alert_results))
 
         display_action = action
         if action == "reject":
@@ -262,6 +358,36 @@ class RiskEngine:
         """对事件做只读匹配，返回命中结果，不改动任何状态。"""
         start = time.perf_counter()
         ts = event.get("ts") or time.time()
+
+        # 名单判定与正式链路一致：黑名单直接拒绝 / 白名单信任放行
+        if self.list_store is not None:
+            list_hits = self.list_store.match(event, ts=ts, count=False)
+            if list_hits["black"]:
+                top = list_hits["black"][0]
+                return {
+                    "matched": True,
+                    "action": "reject",
+                    "risk_score": top["risk_score"],
+                    "reason": top["reason"] or f"{top['dimension_label']}命中黑名单",
+                    "list_hit": {"type": "black", "hits": list_hits["black"]},
+                    "fired_rules": [],
+                    "elapsed_us": int((time.perf_counter() - start) * 1e6),
+                    "engine_version": self.registry.current.version,
+                }
+            if list_hits["white"]:
+                top = list_hits["white"][0]
+                return {
+                    "matched": False,
+                    "action": "pass",
+                    "risk_score": 0,
+                    "trusted": True,
+                    "reason": top["reason"] or f"{top['dimension_label']}命中白名单，信任放行",
+                    "list_hit": {"type": "white", "hits": list_hits["white"]},
+                    "fired_rules": [],
+                    "elapsed_us": int((time.perf_counter() - start) * 1e6),
+                    "engine_version": self.registry.current.version,
+                }
+
         snapshot = self.registry.current
         candidates = snapshot.matcher.match(event)
         fired = []
@@ -378,6 +504,8 @@ class RiskEngine:
                 "matched": hit_n,
                 "rejected": reject_n,
                 "alerted": c["alerted"],
+                "blacklist_hits": c["blacklist_hits"],
+                "whitelist_hits": c["whitelist_hits"],
                 "hit_rate": hit_rate,
                 "reject_rate": reject_rate,
                 "avg_risk_score": avg_score,
@@ -392,5 +520,6 @@ class RiskEngine:
     def reset_stats(self):
         with self._lock:
             self._counters = {"total": 0, "matched": 0, "rejected": 0, "alerted": 0,
+                              "blacklist_hits": 0, "whitelist_hits": 0,
                               "risk_score_sum": 0.0, "elapsed_us_sum": 0.0}
             self._minute_series = {}

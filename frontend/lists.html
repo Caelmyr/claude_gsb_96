@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>名单管理 · 风控引擎</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<script src="assets/js/api.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const DIM_LABEL = { ip: "IP", user: "用户", device: "设备", bank_card: "银行卡" };
+const DIM_FIELD = { ip: "ip", user: "user_id", device: "device_id", bank_card: "bank_card" };
+const SRC_LABEL = { manual: "人工添加", auto: "系统自动" };
+const ACT_LABEL = { create: "新增", bulk_create: "批量新增", update: "修改",
+                    delete: "删除", enable: "启用", disable: "停用" };
+const TS_LABEL = { effective: "生效中", pending: "未生效", expired: "已过期" };
+const TS_CLS = { effective: "success", pending: "warning", expired: "muted" };
+
+let meta = null;
+let filters = { list_type: "", dimension: "", enabled: "", time_status: "", source: "", keyword: "" };
+let page = 1, pageSize = 15, total = 0;
+let entries = [];
+
+/* ---------------- 数据加载 ---------------- */
+async function loadSummary() {
+  const r = await API.get("/api/lists/summary");
+  const s = r.summary;
+  document.getElementById("summary").innerHTML = `
+    <div class="stat"><div class="label">黑名单条目</div><div class="value danger">${s.black_total}</div><div class="hint">生效中 ${s.black_effective} 条</div></div>
+    <div class="stat"><div class="label">白名单条目</div><div class="value success">${s.white_total}</div><div class="hint">生效中 ${s.white_effective} 条</div></div>
+    <div class="stat"><div class="label">黑名单命中（拒绝）</div><div class="value danger">${s.black_hits}</div><div class="hint">本次运行累计</div></div>
+    <div class="stat"><div class="label">白名单命中（放行）</div><div class="value primary">${s.white_hits}</div><div class="hint">本次运行累计</div></div>`;
+}
+
+async function load() {
+  const q = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v) q.set(k, v); });
+  q.set("page", page); q.set("page_size", pageSize);
+  const r = await API.get("/api/lists?" + q.toString());
+  entries = r.entries; total = r.total;
+  renderTable(); renderPager();
+}
+
+function typeBadge(t) {
+  return t === "black" ? '<span class="badge danger">黑名单</span>'
+                       : '<span class="badge success">白名单</span>';
+}
+
+function renderTable() {
+  const tbody = document.getElementById("list-rows");
+  if (!entries.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">暂无名单条目，点击右上角「新增条目」创建</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = entries.map(e => {
+    const timeRange = (e.effective_start || e.effective_end)
+      ? `${e.effective_start ? UI.fmtTime(e.effective_start) : "…"}<br>~ ${e.effective_end ? UI.fmtTime(e.effective_end) : "…"}`
+      : '<span class="muted">长期有效</span>';
+    const status = (e.enabled ? '<span class="badge success">启用</span>' : '<span class="badge muted">停用</span>')
+      + ` <span class="badge ${TS_CLS[e.effective_status]}">${TS_LABEL[e.effective_status]}</span>`;
+    return `<tr>
+      <td>${typeBadge(e.list_type)}</td>
+      <td>${UI.esc(DIM_LABEL[e.dimension] || e.dimension)}</td>
+      <td class="mono">${UI.esc(e.value)}</td>
+      <td>${e.list_type === "black" ? UI.levelBadge(e.risk_level) : '<span class="muted">-</span>'}</td>
+      <td>${UI.esc(e.reason || "")}${e.remark ? `<div class="muted" style="font-size:11px">${UI.esc(e.remark)}</div>` : ""}</td>
+      <td style="font-size:12px">${timeRange}</td>
+      <td><span class="badge ${e.source === "auto" ? "info" : "muted"}">${UI.esc(SRC_LABEL[e.source] || e.source)}</span></td>
+      <td>${status}</td>
+      <td class="num">${e.hit_count || 0}</td>
+      <td class="text-right" style="white-space:nowrap">
+        <button class="btn sm" onclick="editModal('${e.id}')">编辑</button>
+        <button class="btn sm ${e.enabled ? "warning" : "success"}" onclick="toggleEntry('${e.id}', ${!e.enabled})">${e.enabled ? "停用" : "启用"}</button>
+        <button class="btn sm ghost" onclick="auditModal('${e.id}')">审计</button>
+        <button class="btn sm danger" onclick="delEntry('${e.id}')">删除</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function renderPager() {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  document.getElementById("pager").innerHTML = `
+    <span class="muted">共 ${total} 条 · 第 ${page}/${pages} 页</span>
+    <span style="flex:1"></span>
+    <button class="btn sm" ${page <= 1 ? "disabled" : ""} onclick="gotoPage(${page - 1})">上一页</button>
+    <button class="btn sm" ${page >= pages ? "disabled" : ""} onclick="gotoPage(${page + 1})">下一页</button>`;
+}
+function gotoPage(p) { page = Math.max(1, p); load(); }
+
+function applyFilters() {
+  filters = {
+    list_type: document.getElementById("f-type").value,
+    dimension: document.getElementById("f-dim").value,
+    enabled: document.getElementById("f-enabled").value,
+    time_status: document.getElementById("f-ts").value,
+    source: document.getElementById("f-source").value,
+    keyword: document.getElementById("f-kw").value.trim(),
+  };
+  page = 1; load();
+}
+function resetFilters() {
+  ["f-type", "f-dim", "f-enabled", "f-ts", "f-source", "f-kw"].forEach(id => document.getElementById(id).value = "");
+  applyFilters();
+}
+
+/* ---------------- 新增 / 编辑 ---------------- */
+function dtToTs(id) {
+  const v = document.getElementById(id).value;
+  return v ? Math.floor(new Date(v).getTime() / 1000) : null;
+}
+function tsToDt(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function entryForm(e) {
+  e = e || {};
+  const dimOpts = Object.entries(DIM_LABEL).map(([k, v]) =>
+    `<option value="${k}" ${e.dimension === k ? "selected" : ""}>${v}</option>`).join("");
+  const lvOpts = ["低", "中", "高", "严重"].map(l =>
+    `<option ${e.risk_level === l || (!e.risk_level && l === "高") ? "selected" : ""}>${l}</option>`).join("");
+  return `
+    <div class="row">
+      <div class="field"><label>名单类型</label>
+        <select id="ef-type">
+          <option value="black" ${e.list_type !== "white" ? "selected" : ""}>黑名单（命中拒绝）</option>
+          <option value="white" ${e.list_type === "white" ? "selected" : ""}>白名单（命中放行）</option>
+        </select></div>
+      <div class="field"><label>维度</label><select id="ef-dim">${dimOpts}</select></div>
+    </div>
+    <div class="field"><label>名单值</label><input id="ef-value" value="${UI.esc(e.value || "")}" placeholder="如 1.2.3.4 / 10.0.0.0/8 / u123 / 设备指纹 / 银行卡号"></div>
+    <div class="row">
+      <div class="field"><label>风险等级（黑名单）</label><select id="ef-level">${lvOpts}</select></div>
+      <div class="field"><label>来源</label>
+        <select id="ef-source">
+          <option value="manual" ${e.source !== "auto" ? "selected" : ""}>人工添加</option>
+          <option value="auto" ${e.source === "auto" ? "selected" : ""}>系统自动生成</option>
+        </select></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>生效开始（留空不限）</label><input id="ef-start" type="datetime-local" value="${tsToDt(e.effective_start)}"></div>
+      <div class="field"><label>生效结束（留空不限）</label><input id="ef-end" type="datetime-local" value="${tsToDt(e.effective_end)}"></div>
+    </div>
+    <div class="field"><label>处置原因（命中后展示）</label><input id="ef-reason" value="${UI.esc(e.reason || "")}" placeholder="如：撞库攻击源 IP"></div>
+    <div class="field"><label>备注</label><input id="ef-remark" value="${UI.esc(e.remark || "")}"></div>`;
+}
+
+function readForm() {
+  return {
+    list_type: document.getElementById("ef-type").value,
+    dimension: document.getElementById("ef-dim").value,
+    value: document.getElementById("ef-value").value.trim(),
+    risk_level: document.getElementById("ef-level").value,
+    source: document.getElementById("ef-source").value,
+    effective_start: dtToTs("ef-start"),
+    effective_end: dtToTs("ef-end"),
+    reason: document.getElementById("ef-reason").value.trim(),
+    remark: document.getElementById("ef-remark").value.trim(),
+  };
+}
+
+function editModal(id) {
+  const e = id ? entries.find(x => x.id === id) : null;
+  UI.modal(id ? "编辑名单条目" : "新增名单条目", entryForm(e),
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="saveEntry('${id || ""}')">保存</button>`);
+}
+
+async function saveEntry(id) {
+  const body = readForm();
+  if (!body.value) { UI.toast("请填写名单值", "err"); return; }
+  try {
+    if (id) await API.put("/api/lists/" + id, body);
+    else await API.post("/api/lists", body);
+    UI.toast("已保存", "ok");
+    document.querySelector("#modal-mask").classList.remove("show");
+    load(); loadSummary();
+  } catch (err) { UI.toast(err.message, "err"); }
+}
+
+async function toggleEntry(id, enabled) {
+  await API.post(`/api/lists/${id}/enable`, { enabled });
+  UI.toast(enabled ? "已启用" : "已停用", "ok");
+  load(); loadSummary();
+}
+
+async function delEntry(id) {
+  const e = entries.find(x => x.id === id);
+  if (!confirm(`确认删除「${e ? e.value : id}」？删除后可在审计日志中追溯。`)) return;
+  await API.del("/api/lists/" + id);
+  UI.toast("已删除", "ok");
+  load(); loadSummary();
+}
+
+/* ---------------- 批量导入 ---------------- */
+function batchModal() {
+  UI.modal("批量导入名单", `
+    <div class="row">
+      <div class="field"><label>名单类型</label>
+        <select id="bf-type"><option value="black">黑名单</option><option value="white">白名单</option></select></div>
+      <div class="field"><label>维度</label>
+        <select id="bf-dim">${Object.entries(DIM_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></div>
+    </div>
+    <div class="field"><label>名单值（每行一个，或用逗号分隔）</label>
+      <textarea id="bf-values" rows="6" class="mono" placeholder="1.2.3.4&#10;5.6.7.8&#10;u12345"></textarea></div>
+    <div class="row">
+      <div class="field"><label>风险等级</label>
+        <select id="bf-level"><option>低</option><option>中</option><option selected>高</option><option>严重</option></select></div>
+      <div class="field"><label>来源</label>
+        <select id="bf-source"><option value="manual">人工添加</option><option value="auto">系统自动生成</option></select></div>
+    </div>
+    <div class="field"><label>处置原因</label><input id="bf-reason" placeholder="批量条目共用同一原因"></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">取消</button>
+     <button class="btn primary" onclick="doBatch()">导入</button>`);
+}
+
+async function doBatch() {
+  const body = {
+    list_type: document.getElementById("bf-type").value,
+    dimension: document.getElementById("bf-dim").value,
+    values: document.getElementById("bf-values").value,
+    risk_level: document.getElementById("bf-level").value,
+    source: document.getElementById("bf-source").value,
+    reason: document.getElementById("bf-reason").value.trim(),
+  };
+  try {
+    const r = await API.post("/api/lists/batch", body);
+    let msg = `成功导入 ${r.created_count} 条`;
+    if (r.skipped.length) msg += `，跳过 ${r.skipped.length} 条（${r.skipped[0].reason} 等）`;
+    UI.toast(msg, r.created_count ? "ok" : "warn");
+    document.querySelector("#modal-mask").classList.remove("show");
+    load(); loadSummary();
+  } catch (err) { UI.toast(err.message, "err"); }
+}
+
+/* ---------------- 审计 ---------------- */
+function auditCell(a) {
+  if (a.action === "update" && a.before && a.after) {
+    const diffs = [];
+    const keys = { value: "值", enabled: "启用", risk_level: "风险等级", reason: "原因",
+                   remark: "备注", source: "来源", effective_start: "生效起", effective_end: "生效止" };
+    Object.keys(keys).forEach(k => {
+      const b = a.before[k], af = a.after[k];
+      if (JSON.stringify(b ?? null) !== JSON.stringify(af ?? null)) {
+        const fmt = v => (k.startsWith("effective") && v) ? UI.fmtTime(v) : (v == null || v === "" ? "∅" : v);
+        diffs.push(`${keys[k]}: ${UI.esc(String(fmt(b)))} → ${UI.esc(String(fmt(af)))}`);
+      }
+    });
+    return diffs.length ? diffs.join("<br>") : '<span class="muted">无字段变化</span>';
+  }
+  if (a.action === "delete" && a.before) {
+    return `<span class="muted">原因：${UI.esc(a.before.reason || "-")}；等级：${UI.esc(a.before.risk_level || "-")}</span>`;
+  }
+  if (a.after && a.after.reason !== undefined && a.action === "create") {
+    return `<span class="muted">原因：${UI.esc(a.after.reason || "-")}</span>`;
+  }
+  return UI.esc(a.detail || "");
+}
+
+async function auditModal(entryId) {
+  const url = "/api/lists/audits?limit=200" + (entryId ? `&entry_id=${entryId}` : "");
+  const r = await API.get(url);
+  const rows = r.audits.map(a => `<tr>
+    <td style="white-space:nowrap">${UI.fmtTime(a.ts)}</td>
+    <td>${UI.esc(a.operator)}</td>
+    <td><span class="badge ${a.action === "delete" ? "danger" : a.action === "disable" ? "warning" : "info"}">${UI.esc(ACT_LABEL[a.action] || a.action)}</span></td>
+    <td>${a.list_type ? typeBadge(a.list_type) : ""} ${UI.esc(DIM_LABEL[a.dimension] || a.dimension || "")}</td>
+    <td class="mono">${UI.esc(a.entry_value || "")}</td>
+    <td style="font-size:12px">${auditCell(a)}</td>
+  </tr>`).join("");
+  UI.modal(entryId ? "条目审计日志" : "名单操作审计（最近 200 条）", `
+    <div class="table-wrap"><table>
+      <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>名单</th><th>条目值</th><th>变更 / 说明</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="empty">暂无审计记录</td></tr>'}</tbody>
+    </table></div>`,
+    `<button class="btn" onclick="document.querySelector('#modal-mask').classList.remove('show')">关闭</button>`);
+}
+
+/* ---------------- 命中测试 ---------------- */
+async function runCheck() {
+  const dimension = document.getElementById("ck-dim").value;
+  const value = document.getElementById("ck-value").value.trim();
+  if (!value) { UI.toast("请输入要测试的值", "err"); return; }
+  const r = await API.post("/api/lists/check", { dimension, value });
+  const box = document.getElementById("ck-result");
+  const hitRows = hits => hits.map(h => `<tr>
+    <td>${typeBadge(h.list_type)}</td><td class="mono">${UI.esc(h.matched_value)}</td>
+    <td>${UI.levelBadge(h.risk_level)}</td><td>${UI.esc(h.reason || "-")}</td>
+    <td><span class="badge ${h.source === "auto" ? "info" : "muted"}">${UI.esc(SRC_LABEL[h.source] || h.source)}</span></td></tr>`).join("");
+  let html;
+  if (r.verdict === "reject") {
+    html = `<div class="flex mb"><span class="badge danger">✋ 命中黑名单 → 直接拒绝</span></div>`;
+  } else if (r.verdict === "pass") {
+    html = `<div class="flex mb"><span class="badge success">✓ 命中白名单 → 信任放行</span></div>`;
+  } else {
+    html = `<div class="flex mb"><span class="badge muted">未命中任何名单 → 进入规则引擎</span></div>`;
+  }
+  const all = r.black.concat(r.white);
+  if (all.length) {
+    html += `<table><thead><tr><th>名单</th><th>命中值</th><th>风险等级</th><th>处置原因</th><th>来源</th></tr></thead>
+      <tbody>${hitRows(all)}</tbody></table>`;
+  }
+  box.innerHTML = html;
+}
+
+/* ---------------- 页面骨架 ---------------- */
+boot("名单管理", async () => {
+  const page_el = document.getElementById("page");
+  page_el.innerHTML = `
+    <div class="grid cols-4" id="summary"></div>
+
+    <div class="card">
+      <div class="card-head"><h3>🚦 黑白名单</h3>
+        <div class="flex">
+          <button class="btn sm" onclick="auditModal()">🕘 操作审计</button>
+          <button class="btn sm" onclick="batchModal()">📥 批量导入</button>
+          <button class="btn sm primary" onclick="editModal()">＋ 新增条目</button>
+        </div>
+      </div>
+      <div class="sub">按 IP / 用户 / 设备 / 银行卡维度维护名单：黑名单命中直接拒绝并产生告警，白名单命中信任放行（短路规则引擎）</div>
+      <div class="flex mb" style="flex-wrap:wrap">
+        <select id="f-type" style="width:130px"><option value="">全部名单</option><option value="black">黑名单</option><option value="white">白名单</option></select>
+        <select id="f-dim" style="width:120px"><option value="">全部维度</option>${Object.entries(DIM_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+        <select id="f-enabled" style="width:110px"><option value="">全部状态</option><option value="true">启用</option><option value="false">停用</option></select>
+        <select id="f-ts" style="width:120px"><option value="">全部时效</option><option value="effective">生效中</option><option value="pending">未生效</option><option value="expired">已过期</option></select>
+        <select id="f-source" style="width:130px"><option value="">全部来源</option><option value="manual">人工添加</option><option value="auto">系统自动生成</option></select>
+        <input id="f-kw" style="width:200px" placeholder="搜索值 / 原因 / 备注 / 操作人" onkeydown="if(event.key==='Enter')applyFilters()">
+        <button class="btn sm primary" onclick="applyFilters()">查询</button>
+        <button class="btn sm" onclick="resetFilters()">重置</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>名单</th><th>维度</th><th>值</th><th>风险等级</th><th>处置原因 / 备注</th><th>生效时间</th><th>来源</th><th>状态</th><th class="num">命中</th><th></th></tr></thead>
+          <tbody id="list-rows"></tbody>
+        </table>
+      </div>
+      <div class="flex mt" id="pager"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>🎯 名单命中测试</h3></div>
+      <div class="sub">输入维度与值，实时返回当前会命中的黑 / 白名单（不影响线上命中计数）</div>
+      <div class="row">
+        <div class="field" style="max-width:160px"><label>维度</label>
+          <select id="ck-dim">${Object.entries(DIM_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></div>
+        <div class="field"><label>值</label><input id="ck-value" placeholder="如 45.155.204.10 / u999" onkeydown="if(event.key==='Enter')runCheck()"></div>
+        <div class="field" style="flex:0"><label>&nbsp;</label><button class="btn primary" onclick="runCheck()">测试</button></div>
+      </div>
+      <div id="ck-result"></div>
+    </div>`;
+  loadSummary();
+  load();
+});
+</script>
+</body>
+</html>

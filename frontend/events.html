@@ -50,10 +50,18 @@ function appendEvent(event, decision) {
   const risk = decision.risk_score || 0;
   const line = document.createElement("div");
   line.className = "ev-line";
+  let listTag = "";
+  if (decision.list_hit) {
+    const h = decision.list_hit.hits[0];
+    listTag = decision.list_hit.type === "black"
+      ? `<span class="tag" style="color:#f87171">⛔ ${UI.esc(h.dimension_label)}黑名单</span>`
+      : `<span class="tag" style="color:#4ade80">✓ ${UI.esc(h.dimension_label)}白名单</span>`;
+  }
   line.innerHTML = `<span class="t">${t}</span>
     <span class="tag">${icon} ${UI.esc(event.type)}</span>
     <span style="flex:1;color:#9ca3af">${UI.esc(event.ip || "")} ${UI.esc(event.user_id || "")} ${event.amount != null ? "¥" + event.amount : ""}</span>
-    ${decision.matched ? `<span class="tag">命中${decision.fired_rules.length}条</span>` : ""}
+    ${listTag}
+    ${decision.matched && decision.fired_rules.length ? `<span class="tag">命中${decision.fired_rules.length}条</span>` : ""}
     <span class="${actCls}">${actLabel} ${risk ? "· " + risk : ""}</span>`;
   log.appendChild(line);
   lineCount++;

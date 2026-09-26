@@ -49,6 +49,18 @@ function renderResult(id, r) {
     <span class="badge ${res.matched ? "danger" : "success"}">${res.matched ? "命中" : "未命中"}</span>
     <span>${UI.actionBadge(res.action)} 风险分 ${res.risk_score}</span>
     <span class="muted">耗时 ${res.elapsed_us} μs · 引擎版本 ${res.engine_version}</span></div>`;
+  if (res.list_hit) {
+    const isBlack = res.list_hit.type === "black";
+    html += `<div class="mb"><span class="badge ${isBlack ? "danger" : "success"}">${isBlack ? "⛔ 黑名单直接拒绝" : "✓ 白名单信任放行"}</span>
+      <span class="muted" style="font-size:12px"> ${UI.esc(res.reason || "")}</span></div>`;
+    html += `<table><thead><tr><th>维度</th><th>命中值</th><th>风险等级</th><th>处置原因</th><th>来源</th></tr></thead><tbody>`;
+    res.list_hit.hits.forEach(h => {
+      html += `<tr><td>${UI.esc(h.dimension_label)}</td><td class="mono">${UI.esc(h.matched_value)}</td>
+        <td>${UI.levelBadge(h.risk_level)}</td><td>${UI.esc(h.reason || "-")}</td>
+        <td>${h.source === "auto" ? "系统自动" : "人工添加"}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
   if (res.fired_rules && res.fired_rules.length) {
     html += `<table><thead><tr><th>规则</th><th>原因</th><th>动作</th><th>风险分</th><th>聚合结果</th></tr></thead><tbody>`;
     res.fired_rules.forEach(f => {

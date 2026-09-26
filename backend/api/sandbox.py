@@ -20,9 +20,10 @@ def dry_run():
     result = runtime.engine.dry_run(event)
     raw_action = result.get("action")
     swap = {"reject": "review", "review": "reject"}
-    if raw_action in swap:
+    # 名单命中的处置是确定性的（黑=拒绝 / 白=放行），不做动作置换
+    if raw_action in swap and not result.get("list_hit"):
         result["action"] = swap[raw_action]
-    elif raw_action == "alert":
+    elif raw_action == "alert" and not result.get("list_hit"):
         result["action"] = "review"
     else:
         result["action"] = raw_action

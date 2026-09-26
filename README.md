@@ -6,13 +6,14 @@
 
 ## 🚀 功能特性
 
-### 前端（10 个页面，原生 HTML/CSS/JS）
+### 前端（12 个页面，原生 HTML/CSS/JS）
 | 页面 | 路径 | 说明 |
 |------|------|------|
 | 登录 / 总览 | `index.html` | 登录认证、系统概览看板、关键指标 |
 | 规则配置 | `rules.html` | 规则 CRUD、CodeMirror JSON 编辑器、语法校验、启停 |
 | 决策流设计 | `flows.html` | 可视化拖拽节点（条件 / 动作 / 分支）编排决策流 |
-| 实时事件流 | `events.html` | WebSocket 滚动展示实时事件与命中告警 |
+| 名单管理 | `lists.html` | IP/用户/设备/银行卡黑白名单 CRUD、启停、有效期、命中测试、操作审计 |
+| 实时事件流 | `events.html` | WebSocket 滚动展示实时事件与命中告警（含名单命中标识） |
 | 告警列表 | `alerts.html` | 告警查询、去重计数、标记处理、导出（CSV/JSON） |
 | 统计报表 | `stats.html` | ECharts 图表：命中率、拒绝率、事件趋势、规则命中排行 |
 | 用户管理 | `users.html` | 用户 CRUD、角色（admin/analyst/viewer）、重置密码 |
@@ -23,6 +24,9 @@
 
 ### 后端（Python + Flask）
 - **高性能规则匹配**：Rete 风格 alpha 判别网络（类型哈希路由 + 条件节点共享），可选决策树匹配器
+- **黑白名单前置处置**：IP/用户/设备/银行卡四维名单，黑名单直接拒绝（明确原因 + 风险等级 + 告警），白名单信任放行（短路规则引擎）；IP 维度支持 CIDR 网段
+- **名单高性能匹配**：不可变索引快照 + 单引用原子替换（与规则热更新同思路），精确值哈希 O(1) 命中，启停与生效时间窗匹配时判定、到期自动失效
+- **名单操作审计**：增/删/改/启停全量留痕（操作者、时间、前后快照），独立审计日志可查询追溯
 - **滑动窗口精确聚合**：时间有序双端队列 + 惰性淘汰，均摊 O(1) 精确计数（count/sum/avg/max/min/distinct_count）
 - **动态规则热更新**：不可变编译快照 + 单引用原子替换，更新/删除/启停/回滚全程不中断匹配
 - **版本回滚**：每次保存追加版本历史快照，回滚以更高版本号重新发布
@@ -41,9 +45,10 @@ gsb3/
 │   ├── storage.py             # JSON 原子读写、文件锁(flock)、事件小时分片、ID 生成
 │   ├── auth.py                # 认证、SHA-256 加盐密码、角色鉴权装饰器、默认账号
 │   ├── event_store.py         # 事件存储：内存缓冲 + 后台刷盘线程
+│   ├── list_store.py          # 黑白名单：CRUD、不可变索引快照匹配、审计日志
 │   ├── flows.py               # 决策流编译与执行（条件/动作/分支）
 │   ├── settings_store.py      # 系统设置读写（深合并）
-│   ├── seed.py                # 样例数据初始化（10 条规则、字典、示例决策流，幂等）
+│   ├── seed.py                # 样例数据初始化（10 条规则、字典、示例决策流、示例名单，幂等）
 │   ├── runtime.py             # 运行时单例引用
 │   ├── engine/
 │   │   ├── rule_parser.py     # 规则编译：条件编译、聚合规格、编译产物
@@ -59,12 +64,13 @@ gsb3/
 │       ├── alerts.py          # 告警查询、标记、导出、统计
 │       ├── stats.py           # 统计报表（命中率/拒绝率/趋势）
 │       ├── flows.py           # 决策流 CRUD 与执行
+│       ├── lists.py           # 黑白名单 CRUD、启停、审计、命中测试
 │       ├── sandbox.py         # dry-run、单规则/决策流测试、窗口预热
 │       ├── users.py           # 用户管理
 │       ├── settings.py        # 系统设置
 │       └── dict.py            # 数据字典
-├── frontend/                  # 11 个页面 + assets/css/style.css + assets/js/api.js
-├── data/                      # JSON 数据（运行时自动创建）：rules/versions/events/alerts/...
+├── frontend/                  # 12 个页面 + assets/css/style.css + assets/js/api.js
+├── data/                      # JSON 数据（运行时自动创建）：rules/versions/events/alerts/lists/...
 ├── requirements.txt
 ├── run.py                     # 一键启动脚本
 └── README.md
@@ -90,6 +96,12 @@ python run.py
 > 滑动窗口/去重等容量参数重启后生效。
 
 ## 🎯 核心难点解决方案
+
+### 0. 黑白名单前置处置与高性能匹配
+- **处置链路**：事件进入引擎先做名单匹配——命中黑名单直接拒绝，决策携带明确的处置原因与风险等级（低/中/高/严重 → 风险分），并复用告警聚合去重产生 `source=blacklist` 的告警；命中白名单则信任放行，短路规则引擎（不进滑动窗口、不产生告警），黑白同时命中时黑名单优先
+- **不可变索引快照**：名单变更时旁路构建全新 `_ListIndex`（`(名单类型, 维度) -> {归一化值: 条目}` 哈希表 + CIDR 网段列表），构建完成后原子替换引用；匹配线程只读一次快照，增删改全程不阻塞匹配，精确值 O(1) 命中
+- **生效时间窗**：启停状态与 `effective_start`/`effective_end` 在匹配时判定，条目到期自动失效，无需重建索引或定时任务
+- **操作审计**：增/删/改/启停全部追加审计记录（操作者、时间戳、前后快照），上限 2000 条滚动淘汰；命中计数内存累加、守护线程懒落盘，避免高频事件流逐条 fsync
 
 ### 1. 规则引擎高性能匹配
 - **Rete 风格 alpha 判别网络**：按事件类型哈希路由（`TypeNode` 根分桶）+ 条件节点跨规则共享，避免对每条规则重复判定相同条件；匹配复杂度与「命中条件数」相关而非「规则总数」
@@ -118,6 +130,7 @@ python run.py
 - 规则：`GET/POST /api/rules`、`GET/PUT/DELETE /api/rules/<id>`、`POST /api/rules/validate`、`POST /api/rules/<id>/enable`、`GET /api/rules/<id>/versions`、`POST /api/rules/<id>/rollback`
 - 事件：`GET /api/events`、`POST /api/events/ingest`、`POST /api/events/simulate`、`GET /api/events/store_stats`
 - 告警：`GET /api/alerts`、`POST /api/alerts/mark`、`GET /api/alerts/export`、`GET /api/alerts/stats`
+- 名单：`GET/POST /api/lists`、`GET/PUT/DELETE /api/lists/<id>`、`POST /api/lists/<id>/enable`、`POST /api/lists/batch`、`GET /api/lists/summary`、`GET /api/lists/audits`、`POST /api/lists/check`、`GET /api/lists/meta`
 - 统计：`GET /api/stats`、`POST /api/stats/reset`
 - 决策流：`GET/POST /api/flows`、`GET/PUT/DELETE /api/flows/<id>`
 - 沙箱：`POST /api/sandbox/dry_run`、`/test_rule`、`/test_flow`、`/seed_window`
